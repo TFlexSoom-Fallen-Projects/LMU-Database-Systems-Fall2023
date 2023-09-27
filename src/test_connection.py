@@ -8,7 +8,7 @@ Desc: A python script to test the connection between different cloud databases.
 import os
 import pymongo
 import psycopg2
-from neo4j import GraphDatabase, RoutingControl
+from neo4j import GraphDatabase
 from dotenv import load_dotenv
 
 
