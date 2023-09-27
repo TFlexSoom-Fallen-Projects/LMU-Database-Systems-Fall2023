@@ -1,0 +1,11 @@
+# Mongo Client
+pymongo==4.5.0
+
+# Postgres Client
+psycopg2==2.9.7
+
+# neo4j could be replaced with gremlin as a language connector
+neo4j==5.12.0 
+
+# Dotenv file reader
+python-dotenv==1.0.0
