@@ -1,0 +1,2 @@
+resources/dataset/*.txt filter=lfs diff=lfs merge=lfs -text
+resources/dataset/*.csv filter=lfs diff=lfs merge=lfs -text
