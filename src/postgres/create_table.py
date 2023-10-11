@@ -5,14 +5,8 @@ Filename: create_table.py
 Desc: A python script to create the tables for the postgres database
 """
 
-import os
 import psycopg
-from dotenv import load_dotenv
-
-
-def read_dotenv_file():
-    load_dotenv()
-    return os.environ
+from utils import read_dotenv_file
 
 def psycopg_create_tables(connection_string):
     # Connect to an existing database
@@ -26,7 +20,7 @@ def psycopg_create_tables(connection_string):
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS netflix_movie (
                     id SERIAL PRIMARY KEY,
-                    release_year date NOT NULL,
+                    release_year date,
                     title TEXT NOT NULL
                 );
                         
@@ -43,6 +37,8 @@ def psycopg_create_tables(connection_string):
                 CREATE TABLE IF NOT EXISTS netflix_rating (
                     user_id SERIAL NOT NULL,
                     movie_id SERIAL NOT NULL,
+                    rating INTEGER NOT NULL,
+                    award_date DATE NOT NULL,
                     PRIMARY KEY(user_id, movie_id),
                     FOREIGN KEY(user_id) REFERENCES netflix_user(id),
                     FOREIGN KEY(movie_id) REFERENCES netflix_movie(id)
