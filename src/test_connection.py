@@ -7,7 +7,7 @@ Desc: A python script to test the connection between different cloud databases.
 
 import os
 import pymongo
-import psycopg2
+import psycopg
 from neo4j import GraphDatabase
 from dotenv import load_dotenv
 
@@ -22,8 +22,8 @@ def pymongo_test(connection_string):
     print(f"Mongo Client: {client}")
 
 
-def psycopg2_test(connection_string):
-    conn = psycopg2.connect(connection_string)
+def psycopg_test(connection_string):
+    conn = psycopg.connect(connection_string)
     print(f"Postgres Connection: {conn}")
 
 
@@ -46,7 +46,7 @@ def main():
         raise RuntimeError("Please Find .env file in slack!")
 
     pymongo_test(environ["MONGO_CONN_STR"])
-    psycopg2_test(environ["POSTGRES_CONN_STR"])
+    psycopg_test(environ["POSTGRES_CONN_STR"])
     neo4j_test(
         environ["NEO4J_CONN_STR"], environ["NEO4J_USERNAME"], environ["NEO4J_PASSWORD"]
     )
