@@ -17,14 +17,11 @@ def pymongo_insert_collection(connection_string, movies_data, ratings_data):
     rating_list = []  # (user_id, movie_id, rating, award_date)
 
     for movie_data in movies_data:
-        year_released = (
-            movie_data[1] if movie_data[1] == "NULL" else f"'{movie_data[1]}-01-01'"
-        )
         title = movie_data[2].replace("'", "\\'")
         movie_list.append(
             {
                 "id": movie_data[0],
-                "release_year": year_released,
+                "release_year": movie_data[1],
                 "title": title,
             }
         )
@@ -33,14 +30,14 @@ def pymongo_insert_collection(connection_string, movies_data, ratings_data):
         for rating in ratings:
             user_set.add(rating["user_id"])
 
-        rating_list.append(
-            {
-                "user_id": rating["user_id"],
-                "movie_id": movie_id,
-                "rating": rating["rating"],
-                "award_date": rating["date"],
-            }
-        )
+            rating_list.append(
+                {
+                    "user_id": rating["user_id"],
+                    "movie_id": movie_id,
+                    "rating": rating["rating"],
+                    "award_date": rating["date"],
+                }
+            )
 
     user_list = [{"id": user_id} for user_id in user_set]
 
