@@ -1,14 +1,13 @@
 """
 Name: Tristan Hilbert
 Date: 11/4/2023
-Filename: create_collection.py
-Desc: Create an Aggregation in MongoDB
+Filename: insert_collection.py
+Desc: Create 3 collections in MongoDB
 """
 
 from pymongo import MongoClient
 from data.ingress import open_1_file, open_movie_file
 from utils import read_dotenv_file
-from time import sleep
 
 
 def pymongo_insert_collection(connection_string, movies_data, ratings_data):
