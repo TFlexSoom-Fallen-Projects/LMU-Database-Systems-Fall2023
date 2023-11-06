@@ -9,67 +9,81 @@ from neo4j import GraphDatabase
 from data.ingress import open_1_file, open_movie_file
 from utils import read_dotenv_file
 
-soft_limit = 100
+soft_limit = 10
 
 
 def neo4j_insert_graph(
     connection_string, username, password, movies_data, ratings_data
 ):
-    movies_str = "CREATE INTO netflix_movie (id, release_year, title) VALUES "
-    for movie_data in movies_data:
-        year_released = (
-            movie_data[1] if movie_data[1] == "NULL" else f"'{movie_data[1]}-01-01'"
-        )
-        title = movie_data[2].replace("'", "\\'")
-        movies_str += f"( {movie_data[0]}, {year_released}, E'{title}' ),"
-
-    movies_str = movies_str[:-1] + ";"
-
-    users_set = set()
-    user_str_base = "INSERT INTO netflix_user (id) VALUES "
-    rating_str_base = (
-        "INSERT INTO netflix_rating (user_id, movie_id, rating, award_date) VALUES "
+    movie_query = (
+        "CREATE (:NetflixMovie {"
+        + "uuid: $uuid,"
+        + "release_year: $release_year,"
+        + "title: $title"
+        + "});"
     )
 
-    user_str_queries = []
-    rating_str_queries = []
+    movie_params = []
+    for movie_data in movies_data:
+        title = movie_data[2].replace("'", "\\'")
+        movie_params.append(
+            {
+                "uuid": movie_data[0],
+                "release_year": movie_data[1],
+                "title": title,
+            }
+        )
 
-    print(f"PREPARING {len(ratings_data)} queries")
+    user_query = "CREATE (:User { id: $id });"
+    rating_query = (
+        "MATCH (m:NetflixMovie { uuid: $movie_id }), (u:User { id: $user_id })"
+        + " CREATE (u)-[:RATED { rating: $rating, award_date: $award_date}]->(m) "
+    )
 
-    for movie_id, ratings in ratings_data.items():
-        user_str_query = user_str_base[:]
-        rating_str_query = rating_str_base[:]
+    users_set = set()
+    user_params = []
+    rating_params = []
 
+    ratings_limit_list = list(ratings_data.items())[:soft_limit]
+    print(f"PREPARING {len(ratings_limit_list)} queries")
+
+    for movie_id, ratings in ratings_limit_list:
         for rating in ratings:
             if rating["user_id"] not in users_set:
                 users_set.add(rating["user_id"])
-                user_str_query += f"( {rating['user_id']} ),"
+                user_params.append({"id": rating["user_id"]})
 
-            rating_str_query += f"( {rating['user_id']}, {movie_id}, {rating['rating']}, '{rating['date']}' ),"
+            rating_params.append(
+                {
+                    "user_id": rating["user_id"],
+                    "movie_id": movie_id,
+                    "rating": rating["rating"],
+                    "award_date": rating["date"],
+                }
+            )
 
-        if len(user_str_query) > len(user_str_base):
-            user_str_queries.append(user_str_query[:-1] + ";")
-
-        rating_str_queries.append(rating_str_query[:-1] + ";")
-        print(f"PREPARED QUERY {len(rating_str_queries)}")
+        print(f"PREPARED QUERY {len(rating_params)}")
 
     auth = (username, password)
-    with GraphDatabase.driver(connection_string, auth=auth) as conn:
-        print("EXECUTING MOVIES QUERY")
-        conn.execute_query(movies_str)
-        print("FINISHED MOVIES QUERY")
-
-        print(f"COMMITTING {len(rating_str_queries)} QUERIES")
+    with GraphDatabase.driver(connection_string, auth=auth) as driver:
+        print(f"COMMITTING {len(movie_params)} QUERIES")
         i = 0
-        for user_str_query in user_str_queries:
-            conn.execute_query(user_str_query)
+        for movie_param in movie_params:
+            driver.execute_query(movie_query, parameters_=movie_param)
             i += 1
             print(f"COMMITTED {i} queries")
 
-        print(f"COMMITTING {len(rating_str_queries)} QUERIES")
+        print(f"COMMITTING {len(user_params)} QUERIES")
         i = 0
-        for rating_str_query in rating_str_queries:
-            conn.execute_query(rating_str_query)
+        for user_param in user_params:
+            driver.execute_query(user_query, parameters_=user_param)
+            i += 1
+            print(f"COMMITTED {i} queries")
+
+        print(f"COMMITTING {len(rating_params)} QUERIES")
+        i = 0
+        for rating_param in rating_params:
+            driver.execute_query(rating_query, parameters_=rating_param)
             i += 1
             print(f"COMMITTED {i} queries")
 
