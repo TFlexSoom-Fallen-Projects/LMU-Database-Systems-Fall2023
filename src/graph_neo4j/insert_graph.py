@@ -36,8 +36,9 @@ def neo4j_insert_graph(
 
     user_query = "CREATE (:User { id: $id });"
     rating_query = (
-        "MATCH (m:NetflixMovie { uuid: $movie_id }), (u:User { id: $user_id })"
-        + " CREATE (u)-[:RATED { rating: $rating, award_date: $award_date}]->(m) "
+        "MATCH (m:NetflixMovie { uuid: $mid })"
+        + " MATCH (u:User { id: $id })"
+        + " CREATE (u)-[r:RATED { rating: $rating, award_date: $award_date}]->(m);"
     )
 
     users_set = set()
@@ -55,8 +56,8 @@ def neo4j_insert_graph(
 
             rating_params.append(
                 {
-                    "user_id": rating["user_id"],
-                    "movie_id": movie_id,
+                    "id": rating["user_id"],
+                    "mid": str(movie_id),
                     "rating": rating["rating"],
                     "award_date": rating["date"],
                 }
