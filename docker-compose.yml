@@ -1,0 +1,59 @@
+version: '3'
+
+services:
+  postgres:
+    image: postgres:15.3
+    container_name: lmu-postgres
+    environment:
+      POSTGRES_PASSWORD: example
+    restart: always
+    volumes:
+      - lmu-postgres:/var/lib/postgresql/data
+    ports:
+      - 5432:5432
+  
+  mongo:
+    image: mongo:7.0.3
+    container_name: lmu-mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: example
+    restart: always
+    volumes:
+      - lmu-mongo:/data/db 
+    ports:
+      - 27017:27017
+
+  neo4j:
+    image: neo4j:5.13.0-community-bullseye
+    container_name: lmu-neo4j
+    restart: always
+    # Username: neo4j
+    # Password: neo4j
+    volumes:
+      - lmu-neo4j:/data
+    ports:
+      - 7474:7474
+      - 7687:7687
+
+
+  redis:
+    image: redis:7.2-rc2
+    container_name: lmu-redis
+    restart: always
+    # No Username
+    # No Password
+    volumes:
+      - lmu-redis:/data
+    ports:
+      - 6379:6379
+
+networks:
+  default:
+    driver: bridge
+
+volumes:
+  lmu-postgres:
+  lmu-mongo:
+  lmu-neo4j:
+  lmu-redis:
