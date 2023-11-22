@@ -9,6 +9,7 @@ import os
 import pymongo
 import psycopg
 from neo4j import GraphDatabase
+import redis
 from dotenv import load_dotenv
 
 
@@ -33,6 +34,11 @@ def neo4j_test(connection_string, username, password):
         print(f"Neo4j GraphDB Connection {conn}")
 
 
+def redis_test(host, username, password, port=6379):
+    boi = redis.Redis(host=host, port=port, db=0, username=username, password=password)
+    print(f"Redis Connection: {boi} and Redis Ping Result: {boi.ping()}")
+
+
 def main():
     environ = read_dotenv_file()
 
@@ -49,6 +55,17 @@ def main():
     psycopg_test(environ["POSTGRES_CONN_STR"])
     neo4j_test(
         environ["NEO4J_CONN_STR"], environ["NEO4J_USERNAME"], environ["NEO4J_PASSWORD"]
+    )
+
+    if ("USE_REDIS" in environ and environ["USE_REDIS"] == "true") and (
+        (not "REDIS_HOST" in environ)
+        or (not "REDIS_USERNAME" in environ)
+        or (not "REDIS_PASSWORD" in environ)
+    ):
+        raise RuntimeError("Redis is used but .env does not have proper values")
+
+    redis_test(
+        environ["REDIS_HOST"], environ["REDIS_USERNAME"], environ["REDIS_PASSWORD"]
     )
 
 
