@@ -1,8 +1,8 @@
 """
 Name: Tristan Hilbert
-Date: 11/4/2023
-Filename: insert_collection.py
-Desc: Create 3 collections in MongoDB
+Date: 11/22/2023
+Filename: insert_keyvalue.py
+Desc: Create and insert hashes into redis
 """
 
 from redis import Redis
