@@ -15,14 +15,13 @@ from redis.commands.search.field import TextField, NumericField
 from redis.commands.search.indexDefinition import IndexDefinition, IndexType
 from redis.commands.search.reducers import count
 from redis.commands.search.reducers import sum as redis_red_sum
-from json import dumps
+from json import dump, dumps
 
-from timeit import timeit
-import timeit as timeit_module
+from time import time
 from dataclasses import dataclass
 
 from data.ingress import open_1_file, open_movie_file
-from dotenv import load_dotenv
+from util import read_dotenv_file
 
 
 @dataclass
@@ -31,29 +30,14 @@ class Result:
     result: str
 
 
-# https://stackoverflow.com/questions/24812253/how-can-i-capture-return-value-with-python-timeit-module
-def _template_func(setup, func):
-    """Create a timer function. Used if the "statement" is a callable."""
-
-    def inner(_it, _timer, _func=func):
-        setup()
-        _t0 = _timer()
-        for _i in _it:
-            retval = _func()
-        _t1 = _timer()
-        return _t1 - _t0, retval
-
-    return inner
-
-
-timeit_module._template_func = _template_func
-######
-
-
 def is_timed(callable):
     def on_call(*args, **kwargs):
-        time, result = timeit(lambda: callable(*args, **kwargs), number=1)
-        return Result(time_seconds=time, result=result)
+        start = time()
+        result = callable(*args, **kwargs)
+        end = time()
+        timing = end - start
+        print(f"TIMING {timing} | RESULT {result}")
+        return Result(time_seconds=(end - start), result=result)
 
     return on_call
 
@@ -62,6 +46,7 @@ class ResultsMonad:
     def __init__(
         self,
         open_connection,
+        name,
         set_up,
         num_of_ratings,
         user_most_ratings,
@@ -69,6 +54,7 @@ class ResultsMonad:
         cummulative_ratings_sum_award_date,
         drop_table,
     ):
+        self._name = name
         self._open_connection = open_connection
         self._set_up = set_up
         self._num_of_ratings = num_of_ratings
@@ -109,9 +95,13 @@ class ResultsMonad:
         self._results["drop_table"] = self._drop_table(self._instance)
         return self
 
+    def get_result(self):
+        return {self._name: self._results}
+
 
 @is_timed
 def psycopg_create_insert(conn, movies_data, ratings_data):
+    return
     # Open a cursor to perform database operations
     with conn.cursor() as cur:
         # Execute a command: this creates a new table
@@ -181,8 +171,6 @@ def psycopg_create_insert(conn, movies_data, ratings_data):
         user_str_queries = []
         rating_str_queries = []
 
-        print(f"PREPARING {len(ratings_data)} queries")
-
         for movie_id, ratings in ratings_data.items():
             user_str_query = user_str_base[:]
             rating_str_query = rating_str_base[:]
@@ -198,9 +186,7 @@ def psycopg_create_insert(conn, movies_data, ratings_data):
                 user_str_queries.append(user_str_query[:-1] + ";")
 
             rating_str_queries.append(rating_str_query[:-1] + ";")
-            print(f"PREPARED QUERY {len(rating_str_queries)}")
 
-        print(f"COMMITTING {len(rating_str_queries)} QUERIES")
         i = 0
         for user_str_query in user_str_queries:
             cur.execute(user_str_query)
@@ -208,9 +194,7 @@ def psycopg_create_insert(conn, movies_data, ratings_data):
             # Make the changes to the database persistent
             conn.commit()
             i += 1
-            print(f"COMMITTED {i} queries")
 
-        print(f"COMMITTING {len(rating_str_queries)} QUERIES")
         i = 0
         for rating_str_query in rating_str_queries:
             cur.execute(rating_str_query)
@@ -218,7 +202,6 @@ def psycopg_create_insert(conn, movies_data, ratings_data):
             # Make the changes to the database persistent
             conn.commit()
             i += 1
-            print(f"COMMITTED {i} queries")
 
 
 @is_timed
@@ -256,8 +239,8 @@ def psycopg_title_most_ratings(conn):
             """
             SELECT nt.title, COUNT(*) AS cnt 
             FROM netflix_rating nr
-            JOIN netflix_title nt ON nr.movie_id = nt.id
-            GROUP BY nr.movie_id
+            JOIN netflix_movie nt ON nr.movie_id = nt.id
+            GROUP BY nr.movie_id, nt.title
             ORDER BY cnt DESC
             LIMIT 1;
             """
@@ -304,6 +287,7 @@ def psycopg_drop_collection(conn):
 def get_psycopg_test():
     return ResultsMonad(
         lambda environ: postgres_connect(environ["POSTGRES_CONN_STR"]),
+        "POSTGRESQL",
         psycopg_create_insert,
         psycopg_num_of_ratings,
         psycopg_user_most_ratings,
@@ -315,6 +299,7 @@ def get_psycopg_test():
 
 @is_timed
 def pymongo_create_insert(conn, movies_data, ratings_data):
+    return
     movie_list = []  # (id, release_year, title)
     user_set = set()  # (id)
     rating_list = []  # (user_id, movie_id, rating, award_date)
@@ -345,17 +330,9 @@ def pymongo_create_insert(conn, movies_data, ratings_data):
     user_list = [{"id": user_id} for user_id in user_set]
 
     db = conn.netflix_db
-    print("SUBMITTING MOVIES!")
     db.netflix_movie.insert_many(movie_list, ordered=False)
-    print("FINISHED SUBMITTING MOVIES!")
-
-    print("SUBMITTING USERS!")
     db.netflix_user.insert_many(user_list, ordered=False)
-    print("FINISHED SUBMITTING USERS!")
-
-    print("SUBMITTING RATINGS!")
     db.netflix_rating.insert_many(rating_list, ordered=False)
-    print("FINISHED SUBMITTING RATINGS!")
 
 
 @is_timed
@@ -366,16 +343,25 @@ def pymongo_num_of_ratings(conn):
 
 
 @is_timed
-def pymongo_user_most_ratings(conn):
+def pymongo_user_most_ratings(conn: MongoClient):
     db = conn.netflix_db
 
     agg_result = db.netflix_rating.aggregate(
-        {"$group": {"user_id": "$user_id", "num_ratings": {"$sum": 1}}},
-        {"$sort": {"num_ratings": -1}},
-        {"$limit": 1},
+        [
+            {
+                "$group": {
+                    "_id": "$_id",
+                    "user_id": {"$first": "$user_id"},
+                    "num_ratings": {"$sum": 1},
+                }
+            },
+            {"$sort": {"num_ratings": -1}},
+            {"$limit": 1},
+        ]
     )
 
-    return agg_result["user_id"]
+    list_result = list(agg_result)
+    return list_result[0]["user_id"]
 
 
 @is_timed
@@ -383,21 +369,29 @@ def pymongo_title_most_ratings(conn):
     db = conn.netflix_db
 
     agg_result = db.netflix_rating.aggregate(
-        {"$group": {"movie_id": "$movie_id", "num_ratings": {"$sum": 1}}},
-        {"$sort": {"num_ratings": -1}},
-        {"$limit": 1},
-        {
-            "$lookup": {
-                "from": "netflix_movie",
-                "localField": "movie_id",
-                "foreignField": "id",
-                "as": "title",
-            }
-        },
+        [
+            {
+                "$group": {
+                    "_id": "$_id",
+                    "movie_id": {"$first": "$movie_id"},
+                    "num_ratings": {"$sum": 1},
+                }
+            },
+            {"$sort": {"num_ratings": -1}},
+            {"$limit": 1},
+            {
+                "$lookup": {
+                    "from": "netflix_movie",
+                    "localField": "movie_id",
+                    "foreignField": "id",
+                    "as": "title",
+                }
+            },
+        ]
     )
 
-    print(agg_result)
-    return agg_result["title"]
+    list_result = list(agg_result)
+    return list_result[0]["title"]
 
 
 @is_timed
@@ -405,30 +399,33 @@ def pymongo_cummulative_ratings_sum_award_date(conn):
     db = conn.netflix_db
 
     agg_result = db.netflix_rating.aggregate(
-        {
-            "$setWindowFields": {
-                "sortBy": {
-                    "$award_date": 1,
-                },
-                "output": {
-                    "rating_sum": {
-                        "$sum": "$rating",
-                        # "window": {
-                        #     "documents": [ <lower boundary>, <upper boundary> ],
-                        #     "range": [ <lower boundary>, <upper boundary> ],
-                        #     "unit": <time unit>
-                        # }
+        [
+            {
+                "$setWindowFields": {
+                    "sortBy": {
+                        "award_date": 1,
                     },
-                },
-            }
-        },
-        {"$limit": 20},
+                    "output": {
+                        "rating_sum": {
+                            "$sum": "$rating",
+                            # "window": {
+                            #     "documents": [ <lower boundary>, <upper boundary> ],
+                            #     "range": [ <lower boundary>, <upper boundary> ],
+                            #     "unit": <time unit>
+                            # }
+                        },
+                    },
+                }
+            },
+            {"$limit": 20},
+        ]
     )
 
-    print(agg_result)
+    list_result = [
+        agg_result_elem["rating_sum"] for agg_result_elem in list(agg_result)
+    ]
 
-    lst_result = [agg_result_elem["rating_sum"] for agg_result_elem in agg_result]
-    return dumps(lst_result)
+    return dumps(list_result)
 
 
 @is_timed
@@ -442,6 +439,7 @@ def pymongo_drop_collection(conn):
 def get_pymongo_test():
     return ResultsMonad(
         lambda environ: MongoClient(environ["MONGO_CONN_STR"]),
+        "DOCUMENT MONGODB",
         pymongo_create_insert,
         pymongo_num_of_ratings,
         pymongo_user_most_ratings,
@@ -603,6 +601,7 @@ def get_neo4j_test():
             environ["NEO4J_CONN_STR"],
             auth=(environ["NEO4J_USERNAME"], environ["NEO4J_PASSWORD"]),
         ),
+        "GRAPH NEO4J",
         neo4j_create_insert,
         neo4j_num_of_ratings,
         neo4j_user_most_ratings,
@@ -731,6 +730,7 @@ def redis_cummulative_ratings_sum_award_date(conn: Redis):
         .sort_by("@date")
     )
 
+    print(res)
     running = 0
     windowed_results = []
     for result in res[:20]:
@@ -761,6 +761,7 @@ def get_redis_test():
             username=environ["REDIS_USERNAME"],
             password=environ["REDIS_PASSWORD"],
         ),
+        "KEY-VALUE REDIS",
         redis_create_insert,
         redis_num_of_ratings,
         redis_user_most_ratings,
@@ -771,7 +772,7 @@ def get_redis_test():
 
 
 def main():
-    environ = load_dotenv()
+    environ = read_dotenv_file()
 
     if (
         (not "MONGO_CONN_STR" in environ)
@@ -810,6 +811,9 @@ def main():
             )
 
         results.append(result_monad.get_result())
+
+    with open("./output.json", "w+") as fd:
+        dump(results, fd)
 
 
 if __name__ == "__main__":

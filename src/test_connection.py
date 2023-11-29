@@ -9,7 +9,7 @@ import os
 import pymongo
 import psycopg
 from neo4j import GraphDatabase
-import redis
+from redis import Redis
 from dotenv import load_dotenv
 
 
@@ -35,7 +35,7 @@ def neo4j_test(connection_string, username, password):
 
 
 def redis_test(host, username, password, port=6379):
-    boi = redis.Redis(host=host, port=port, db=0, username=username, password=password)
+    boi = Redis(host=host, port=port, db=0, username=username, password=password)
     print(f"Redis Connection: {boi} and Redis Ping Result: {boi.ping()}")
 
 
