@@ -14,6 +14,7 @@ from redis.commands.search.aggregation import AggregateRequest
 from redis.commands.search.field import TextField, NumericField
 from redis.commands.search.indexDefinition import IndexDefinition, IndexType
 from redis.commands.search.reducers import count
+from redis.commands.search.reducers import sum as redis_red_sum
 from json import dumps
 
 from timeit import timeit
@@ -420,11 +421,14 @@ def pymongo_cummulative_ratings_sum_award_date(conn):
                     },
                 },
             }
-        }
+        },
+        {"$limit": 20},
     )
 
     print(agg_result)
-    return agg_result["rating_sum"]
+
+    lst_result = [agg_result_elem["rating_sum"] for agg_result_elem in agg_result]
+    return dumps(lst_result)
 
 
 @is_timed
@@ -523,28 +527,52 @@ def neo4j_num_of_ratings(conn):
 
 @is_timed
 def neo4j_user_most_ratings(conn):
-    return conn.execute_query(
+    results = conn.execute_query(
         """
         MATCH (u:USER)-[r:RATED]
-        RETURN u.id, max(count(*))
+        WITH count(*) AS counts
+        RETURN u.id
+        ORDER BY counts DESC LIMIT 1;
         """
     )
+
+    print(results)
+
+    return results[0]
 
 
 @is_timed
 def neo4j_title_most_ratings(conn):
-    return conn.execute_query(
+    results = conn.execute_query(
         """
         MATCH [r:RATED]-(m:MOVIE)
-        RETURN m.title, max(count(*))
+        WITH count(*) AS counts
+        RETURN m.title
+        ORDER BY counts DESC LIMIT 1;
         """
     )
+
+    print(results)
+
+    return results[0]
 
 
 @is_timed
 def neo4j_cummulative_ratings_sum_award_date(conn):
-    # TODO
-    pass
+    results = conn.execute_query(
+        """
+        MATCH [r:RATED]
+        WITH sum(r.rating), r.award_date AS ratingsAwards
+        apoc.coll.runningTotal(ratingsAwards) AS ratingsRunning
+        UNWIND ratingsRunning AS ratingsUnwound
+        RETURN ratingsRunning
+        ORDER BY r.award_date ASC LIMIT 20;
+        """
+    )
+
+    print(results)
+
+    return dumps(results)
 
 
 @is_timed
@@ -697,8 +725,19 @@ def redis_title_most_ratings(conn: Redis):
 
 @is_timed
 def redis_cummulative_ratings_sum_award_date(conn: Redis):
-    # TODO
-    pass
+    res = conn.ft("rating:userid").aggregate(
+        AggregateRequest("*")
+        .group_by("@date", redis_red_sum("rating"))
+        .sort_by("@date")
+    )
+
+    running = 0
+    windowed_results = []
+    for result in res[:20]:
+        running += result["rating"]
+        windowed_results.append(running)
+
+    return dumps(windowed_results)
 
 
 @is_timed
