@@ -664,12 +664,12 @@ def redis_create_insert(conn: Redis, movies_data, ratings_data):
 
     conn.ft("rating:userid").create_index(
         (
-            (NumericField("$.user_id", as_name="user_id")),
-            (NumericField("$.movie_id", as_name="movie_id")),
-            (NumericField("$.rating", as_name="rating")),
-            (TextField("$.date", as_name="date")),
+            (NumericField("user_id")),
+            # (NumericField("movie_id")),
+            # (NumericField("rating")),
+            # (TextField("date")),
         ),
-        definition=IndexDefinition("rating:", index_type=IndexType.HASH),
+        definition=IndexDefinition([], index_type=IndexType.HASH),
     )
 
     rating_pipeline = conn.pipeline(transaction=False)
