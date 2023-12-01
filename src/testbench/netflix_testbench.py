@@ -180,14 +180,14 @@ def psycopg_create_insert(conn, movies_data, ratings_data):
         conn.commit()
 
         total_queries = len(rating_inserts)
-        num_batches = total_queries // 1_000
+        num_batches = total_queries // 10_000
         print(f"COMMITTING:{num_batches}")
         for i in range(num_batches):
-            rating_query = f"INSERT INTO netflix_rating (user_id, movie_id, rating, award_date) VALUES {','.join(rating_inserts[i*1_000:(i+1)*1_000])};"
+            rating_query = f"INSERT INTO netflix_rating (user_id, movie_id, rating, award_date) VALUES {','.join(rating_inserts[i*10_000:(i+1)*10_000])};"
             cur.execute(rating_query)
 
-        if (total_queries % 1_000) != 0:
-            rating_query = f"INSERT INTO netflix_rating (user_id, movie_id, rating, award_date) VALUES {','.join(rating_inserts[num_batches*1000:])};"
+        if (total_queries % 10_000) != 0:
+            rating_query = f"INSERT INTO netflix_rating (user_id, movie_id, rating, award_date) VALUES {','.join(rating_inserts[num_batches*10_000:])};"
             cur.execute(rating_query)
 
         conn.commit()
@@ -444,71 +444,71 @@ def get_pymongo_test():
 
 @is_timed
 def neo4j_create_insert(conn: Driver, movies_data, ratings_data):
-    conn.execute_query(
-        "CREATE CONSTRAINT IF NOT EXISTS FOR (m:NetflixMovie) REQUIRE (m.uuid) IS UNIQUE"
-    )
-    conn.execute_query("CREATE INDEX IF NOT EXISTS FOR (m:NetflixMovie) ON (m.title)")
-    conn.execute_query(
-        "CREATE CONSTRAINT IF NOT EXISTS FOR (u:User) REQUIRE (u.id) IS UNIQUE"
-    )
+    # conn.execute_query("CREATE INDEX FOR (m:MOVIE) ON (m.title)")
+    # conn.execute_query("CREATE CONSTRAINT FOR (m:MOVIE) REQUIRE m.uuid IS UNIQUE")
+    # conn.execute_query("CREATE CONSTRAINT FOR (u:USER) REQUIRE u.id IS UNIQUE")
 
-    def get_movie_query(it):
-        return f"CREATE (:MOVIE {'{'}uuid:$uuid{it},release_year:$release_year{it},title:$title{it}{'}'})"
+    # FOR MEMGRAPH
+    # conn.execute_query("CREATE INDEX ON :MOVIE")
+    # conn.execute_query("CREATE INDEX ON :MOVIE(title)")
+    # conn.execute_query("CREATE CONSTRAINT ON (m:MOVIE) ASSERT m.uuid IS UNIQUE")
+    # conn.execute_query("CREATE INDEX ON :USER")
+    # conn.execute_query("CREATE CONSTRAINT ON (u:USER) ASSERT u.id IS UNIQUE")
+    # conn.execute_query("CREATE INDEX ON :RATED")
 
-    def get_user_query(it):
-        return f"CREATE (:USER {'{'}id:$id{it}{'}'});"
-
-    def get_rating_query(it):
-        return (
-            f"MATCH (m:MOVIE {'{'}uuid:$mid{it}{'}'})"
-            + f"MATCH (u:USER {'{'}id:$id{it}{'}'})"
-            + f"CREATE (u)-[r:RATED {'{'}rating:$rating{it},award_date:$award_date{it}{'}'}]->(m)"
-        )
-
-    movie_queries = []
-    movie_param_list = []
-    for index, movie_data in enumerate(movies_data):
+    movie_batches = []
+    for index, movie_data in enumerate(movies_data[:20]):
         title = "'" + movie_data[2].replace("'", "\\'") + "'"
-        movie_queries.append(get_movie_query(index))
-        movie_param_list.append(
-            f"uuid{index}:{movie_data[0]},release_year{index}:{movie_data[1]},title{index}:{title}"
+        movie_batches.append(
+            f"{'{'}uuid{index}:{movie_data[0]},release_year{index}:{movie_data[1]},title{index}:{title}{'}'}"
         )
 
     users_set = set()
-    user_queries = []
-    user_param_list = []
-    rating_queries = []
-    rating_param_list = []
-    it = 0
+    user_batches = []
+    rating_batches = []
     for movie_id, ratings in list(ratings_data.items()):
         for rating in ratings:
             if rating["user_id"] not in users_set:
                 users_set.add(rating["user_id"])
-                user_queries.append(get_user_query(it))
-                user_param_list.append(f"id{it}:{rating['user_id']}")
+                user_batches.append(f"{'{'}id:{rating['user_id']}{'}'}")
 
-            rating_queries.append(get_rating_query(it))
-            rating_param_list.append(
-                f"id{it}:{rating['user_id']},mid{it}:{movie_id},rating{it}:{rating['rating']},award_date{it}:'{rating['date']}'"
+            rating_batches.append(
+                f"{'{'}id:{rating['user_id']},mid:{movie_id},rating:{rating['rating']},award_date:'{rating['date']}'{'}'}"
             )
 
-            it += 1
-
-    movie_query = f"CALL apoc.cypher.runMany('{';'.join(movie_queries)};', {'{'}{','.join(movie_param_list)}{'}'});"
-    user_query = f"CALL apoc.cypher.runMany('{';'.join(user_queries)};', {'{'}{','.join(user_param_list)}{'}'});"
+    movie_query = f"WITH [{','.join(movie_batches)}] AS batch UNWIND batch as row CREATE (n:MOVIE) SET n += row;"
 
     conn.execute_query(movie_query)
-    conn.execute_query(user_query)
 
-    total_queries = len(rating_queries)
+    total_queries = len(user_batches)
+    num_batches = total_queries // 1_000
+    for i in range(num_batches):
+        print(i)
+        user_query = f"WITH [{','.join(user_batches[i*1_000:(i+1)*1_000])}] AS batch UNWIND batch as row CREATE (n:USER) SET n += row;"
+        conn.execute_query(user_query)
+
+    if (total_queries % 1_000) != 0:
+        user_query = f"WITH [{','.join(user_batches[num_batches*1_000:])}] AS batch UNWIND batch as row CREATE (n:USER) SET n += row;"
+        conn.execute_query(user_query)
+
+    rating_query_postfix = """
+        UNWIND batch as row
+        MATCH (m:MOVIE{uuid:row.mid})
+        MATCH (u:USER{id:row.id})
+        CREATE (u)-[r:RATED {rating:row.rating,award_date:row.award_date}]->(m);
+        """
+
+    print("COMMITTING RATING QUERIES")
+    total_queries = len(rating_batches)
     num_batches = total_queries // 1_000
     print(f"COMMITTING:{num_batches}")
     for i in range(num_batches):
-        rating_query = f"CALL apoc.cypher.runMany('{';'.join(rating_queries[i*1_000:(i+1)*1_000])};', {'{'}{','.join(rating_param_list[i*1_000:(i+1)*1_000])}{'}'});"
+        print(i)
+        rating_query = f"WITH [{','.join(rating_batches[i*1_000:(i+1)*1_000])}] AS batch {rating_query_postfix}"
         conn.execute_query(rating_query)
 
     if (total_queries % 1_000) != 0:
-        rating_query = f"CALL apoc.cypher.runMany('{';'.join(rating_queries[num_batches*1_000:])};', {'{'}{','.join(rating_param_list[num_batches*1_000:])}{'}'});"
+        rating_query = f"WITH [{','.join(rating_batches[num_batches*1_000:])}] AS batch {rating_query_postfix}"
         conn.execute_query(rating_query)
 
 
@@ -516,7 +516,7 @@ def neo4j_create_insert(conn: Driver, movies_data, ratings_data):
 def neo4j_num_of_ratings(conn):
     return conn.execute_query(
         """
-        MATCH [r:RATED])
+        MATCH (:USER)-[r:RATED]->(:MOVIE)
         WITH count(*) AS counts
         RETURN counts;
         """
@@ -527,7 +527,7 @@ def neo4j_num_of_ratings(conn):
 def neo4j_user_most_ratings(conn):
     results = conn.execute_query(
         """
-        MATCH (u:USER)-[r:RATED]
+        MATCH (:USER)-[r:RATED]->(:MOVIE)
         WITH count(*) AS counts
         RETURN u.id
         ORDER BY counts DESC LIMIT 1;
@@ -543,7 +543,7 @@ def neo4j_user_most_ratings(conn):
 def neo4j_title_most_ratings(conn):
     results = conn.execute_query(
         """
-        MATCH [r:RATED]-(m:MOVIE)
+        MATCH (:USER)-[r:RATED]->(m:MOVIE)
         WITH count(*) AS counts
         RETURN m.title
         ORDER BY counts DESC LIMIT 1;
@@ -559,9 +559,8 @@ def neo4j_title_most_ratings(conn):
 def neo4j_cummulative_ratings_sum_award_date(conn):
     results = conn.execute_query(
         """
-        MATCH [r:RATED]
+        MATCH (:USER)-[r:RATED]->(m:MOVIE)
         WITH sum(r.rating), r.award_date AS ratingsAwards
-        apoc.coll.runningTotal(ratingsAwards) AS ratingsRunning
         UNWIND ratingsRunning AS ratingsUnwound
         RETURN ratingsRunning
         ORDER BY r.award_date ASC LIMIT 20;
@@ -577,8 +576,8 @@ def neo4j_cummulative_ratings_sum_award_date(conn):
 def neo4j_drop_collection(conn):
     conn.execute_query(
         """
-        MATCH [r:RATED]
-        DETACH DELETE r;
+        MATCH (u)-[r:RATED]->(m)
+        DETACH DELETE u, r, m;
         """
     )
     conn.execute_query(
@@ -790,7 +789,7 @@ def main():
     domains = [
         # get_psycopg_test(),
         # get_pymongo_test(),
-        get_neo4j_test(),
+        # get_neo4j_test(),
         get_redis_test(),
     ]
     results = []
@@ -803,10 +802,10 @@ def main():
             # Load the data
             result_monad = (
                 domain.set_up(movies_data, ratings_data)
-                .num_of_ratings()
-                .user_most_ratings()
-                .title_most_ratings()
-                .cummulative_ratings_sum_award_date()
+                # .num_of_ratings()
+                # .user_most_ratings()
+                # .title_most_ratings()
+                # .cummulative_ratings_sum_award_date()
                 # .drop_table()
             )
 
