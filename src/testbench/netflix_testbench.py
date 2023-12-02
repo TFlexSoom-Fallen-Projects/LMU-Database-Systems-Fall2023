@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from data.ingress import open_1_file, open_movie_file
 from util import read_dotenv_file
 
+batch_size = 10_000
+
 
 @dataclass
 class Result:
@@ -180,14 +182,14 @@ def psycopg_create_insert(conn, movies_data, ratings_data):
         conn.commit()
 
         total_queries = len(rating_inserts)
-        num_batches = total_queries // 10_000
-        print(f"COMMITTING:{num_batches}")
+        num_batches = total_queries // batch_size
+        print(f"PSQL COMMITTING:{num_batches}")
         for i in range(num_batches):
-            rating_query = f"INSERT INTO netflix_rating (user_id, movie_id, rating, award_date) VALUES {','.join(rating_inserts[i*10_000:(i+1)*10_000])};"
+            rating_query = f"INSERT INTO netflix_rating (user_id, movie_id, rating, award_date) VALUES {','.join(rating_inserts[i*batch_size:(i+1)*batch_size])};"
             cur.execute(rating_query)
 
-        if (total_queries % 10_000) != 0:
-            rating_query = f"INSERT INTO netflix_rating (user_id, movie_id, rating, award_date) VALUES {','.join(rating_inserts[num_batches*10_000:])};"
+        if (total_queries % batch_size) != 0:
+            rating_query = f"INSERT INTO netflix_rating (user_id, movie_id, rating, award_date) VALUES {','.join(rating_inserts[num_batches*batch_size:])};"
             cur.execute(rating_query)
 
         conn.commit()
@@ -322,6 +324,7 @@ def pymongo_create_insert(conn, movies_data, ratings_data):
 
     user_list = [{"id": user_id} for user_id in user_set]
 
+    print(f"MongoDB COMMITTING Everything!")
     db = conn.netflix_db
     db.netflix_movie.insert_many(movie_list, ordered=False)
     db.netflix_user.insert_many(user_list, ordered=False)
@@ -331,7 +334,6 @@ def pymongo_create_insert(conn, movies_data, ratings_data):
 @is_timed
 def pymongo_num_of_ratings(conn):
     db = conn.netflix_db
-
     return db.netflix_rating.count_documents({})
 
 
@@ -481,14 +483,13 @@ def neo4j_create_insert(conn: Driver, movies_data, ratings_data):
     conn.execute_query(movie_query)
 
     total_queries = len(user_batches)
-    num_batches = total_queries // 1_000
+    num_batches = total_queries // batch_size
     for i in range(num_batches):
-        print(i)
-        user_query = f"WITH [{','.join(user_batches[i*1_000:(i+1)*1_000])}] AS batch UNWIND batch as row CREATE (n:USER) SET n += row;"
+        user_query = f"WITH [{','.join(user_batches[i*batch_size:(i+1)*batch_size])}] AS batch UNWIND batch as row CREATE (n:USER) SET n += row;"
         conn.execute_query(user_query)
 
-    if (total_queries % 1_000) != 0:
-        user_query = f"WITH [{','.join(user_batches[num_batches*1_000:])}] AS batch UNWIND batch as row CREATE (n:USER) SET n += row;"
+    if (total_queries % batch_size) != 0:
+        user_query = f"WITH [{','.join(user_batches[num_batches*batch_size:])}] AS batch UNWIND batch as row CREATE (n:USER) SET n += row;"
         conn.execute_query(user_query)
 
     rating_query_postfix = """
@@ -498,17 +499,15 @@ def neo4j_create_insert(conn: Driver, movies_data, ratings_data):
         CREATE (u)-[r:RATED {rating:row.rating,award_date:row.award_date}]->(m);
         """
 
-    print("COMMITTING RATING QUERIES")
     total_queries = len(rating_batches)
-    num_batches = total_queries // 1_000
-    print(f"COMMITTING:{num_batches}")
+    num_batches = total_queries // batch_size
+    print(f"Neo4J COMMITTING:{num_batches}")
     for i in range(num_batches):
-        print(i)
-        rating_query = f"WITH [{','.join(rating_batches[i*1_000:(i+1)*1_000])}] AS batch {rating_query_postfix}"
+        rating_query = f"WITH [{','.join(rating_batches[i*batch_size:(i+1)*batch_size])}] AS batch {rating_query_postfix}"
         conn.execute_query(rating_query)
 
-    if (total_queries % 1_000) != 0:
-        rating_query = f"WITH [{','.join(rating_batches[num_batches*1_000:])}] AS batch {rating_query_postfix}"
+    if (total_queries % batch_size) != 0:
+        rating_query = f"WITH [{','.join(rating_batches[num_batches*batch_size:])}] AS batch {rating_query_postfix}"
         conn.execute_query(rating_query)
 
 
@@ -646,14 +645,14 @@ def redis_create_insert(conn: Redis, movies_data, ratings_data):
 
     movie_pipeline = conn.pipeline(transaction=False)
     conditional_batchify = 0
-    on_count = 1000
+    on_count = 10_000
     for movie_item in movie_list:
         movie_pipeline.hset(name=movie_item["name"], items=movie_item["items"])
         conditional_batchify += 1
 
         if conditional_batchify == on_count:
+            print(f"MOVIE BATCHIFIED!")
             movie_pipeline.execute()
-            movie_pipeline = conn.pipeline(transaction=False)
             conditional_batchify = 0
 
     if conditional_batchify != 0:
@@ -665,20 +664,23 @@ def redis_create_insert(conn: Redis, movies_data, ratings_data):
     conn.ft("rating:userid").create_index(
         (
             (NumericField("user_id")),
-            # (NumericField("movie_id")),
-            # (NumericField("rating")),
-            # (TextField("date")),
+            (NumericField("movie_id")),
+            (NumericField("rating")),
+            (TextField("date")),
         ),
         definition=IndexDefinition([], index_type=IndexType.HASH),
     )
 
     rating_pipeline = conn.pipeline(transaction=False)
+    i = 0
     for rating in rating_list:
         conn.hset(name=rating["name"], items=rating["items"])
+        conditional_batchify += 1
 
         if conditional_batchify == on_count:
+            print(f"RATING BATCHIFIED! {i}")
+            i += 1
             rating_pipeline.execute()
-            rating_pipeline = conn.pipeline(transaction=False)
             conditional_batchify = 0
 
     if conditional_batchify != 0:
@@ -789,8 +791,8 @@ def main():
     domains = [
         # get_psycopg_test(),
         # get_pymongo_test(),
-        # get_neo4j_test(),
-        get_redis_test(),
+        get_neo4j_test(),
+        # get_redis_test(),
     ]
     results = []
 
