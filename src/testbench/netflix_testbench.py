@@ -410,7 +410,7 @@ def pymongo_cummulative_ratings_sum_award_date(conn):
                         "rating_sum": {
                             "$sum": "$rating",
                             "window": {
-                                "document": ["unbounded", "current"],
+                                "documents": ["unbounded", "current"],
                             },
                         },
                     },
