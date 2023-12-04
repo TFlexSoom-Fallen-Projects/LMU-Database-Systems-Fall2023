@@ -1,0 +1,77 @@
+version: '3'
+
+services:
+  postgres:
+    image: postgres:15.3
+    container_name: lmu-postgres
+    environment:
+      POSTGRES_PASSWORD: example
+    restart: always
+    volumes:
+      - lmu-postgres:/var/lib/postgresql/data
+    ports:
+      - 5432:5432
+  
+  mongo:
+    image: mongo:7.0.3
+    container_name: lmu-mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: example
+    restart: always
+    volumes:
+      - lmu-mongo:/data/db 
+    ports:
+      - 27017:27017
+
+  neo4j:
+    image: neo4j:5.13.0-community-bullseye
+    container_name: lmu-neo4j
+    environment:
+      NEO4J_AUTH: none
+      NEO4J_PLUGINS: '["apoc", "apoc-extended"]'
+    restart: always
+    deploy:
+      resources:
+        reservations:
+          memory: 1G
+        limits:
+          memory: 10G
+    # Username: neo4j
+    # Password: neo4j
+    volumes:
+      - lmu-neo4j:/data
+      - ./docker-neo4j:/conf
+    ports:
+      - 7474:7474
+      - 7687:7687
+
+
+  redis:
+    image: redis/redis-stack:6.2.6-v10
+    container_name: lmu-redis
+    restart: always
+    deploy:
+      resources:
+        reservations:
+          memory: 1GB
+        limits:
+          memory: 6GB
+    # No Username
+    # No Password
+    volumes:
+      - lmu-redis:/data
+      - ./docker-redis/redis-stack.conf:/redis-stack.conf
+    ports:
+      - 6379:6379
+      - 8001:8001
+
+networks:
+  default:
+    driver: bridge
+
+volumes:
+  lmu-postgres:
+  lmu-mongo:
+  lmu-neo4j:
+  lmu-redis:
