@@ -628,9 +628,9 @@ def redis_create_insert(conn: Redis, movies_data, ratings_data):
                     "name": f"rating:{rating['user_id']}:{movie_id}",
                     "items": [
                         "user_id",
-                        str(rating["user_id"]),
+                        int(rating["user_id"]),
                         "movie_id",
-                        str(movie_id),
+                        int(movie_id),
                         "rating",
                         str(rating["rating"]),
                         "date",
@@ -780,27 +780,26 @@ def main():
 
     # define different databases here
     domains = [
-        # get_psycopg_test(),
+        get_psycopg_test(),
         get_pymongo_test(),
-        # get_neo4j_test(),
-        # get_redis_test(),
+        get_neo4j_test(),
+        get_redis_test(),
     ]
     results = []
 
-    # movies_data = open_movie_file()
-    # ratings_data = open_1_file()
+    movies_data = open_movie_file()
+    ratings_data = open_1_file()
 
     for domain in domains:
         with domain.open_connection(environ):
             # Load the data
             result_monad = (
-                domain
-                # .set_up(movies_data, ratings_data)
+                domain.set_up(movies_data, ratings_data)
                 .num_of_ratings()
                 .user_most_ratings()
                 .title_most_ratings()
                 .cummulative_ratings_sum_award_date()
-                # .drop_table()
+                .drop_table()
             )
 
         results.append(result_monad.get_result())
