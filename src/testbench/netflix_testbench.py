@@ -13,9 +13,11 @@ from redis import Redis
 from redis.commands.search.aggregation import AggregateRequest
 from redis.commands.search.field import TextField, NumericField
 from redis.commands.search.indexDefinition import IndexDefinition, IndexType
-from redis.commands.search.reducers import count
+from redis.commands.search.reducers import count as redis_red_count
 from redis.commands.search.reducers import sum as redis_red_sum
-from json import dump, dumps
+from redis.commands.search.aggregation import Asc, Desc
+from json import dump, dumps, JSONEncoder
+from concurrent.futures import ThreadPoolExecutor
 
 from time import time
 from dataclasses import dataclass
@@ -32,13 +34,18 @@ class Result:
     result: str
 
 
+class ResultEncoder(JSONEncoder):
+    def default(self, o):
+        return o.__dict__
+
+
 def is_timed(callable):
     def on_call(*args, **kwargs):
         start = time()
         result = callable(*args, **kwargs)
         end = time()
         timing = end - start
-        print(f"TIMING {timing} | RESULT {result}")
+        print(f"TIMING {timing}")
         return Result(time_seconds=(end - start), result=result)
 
     return on_call
@@ -324,7 +331,6 @@ def pymongo_create_insert(conn, movies_data, ratings_data):
 
     user_list = [{"id": user_id} for user_id in user_set]
 
-    print(f"MongoDB COMMITTING Everything!")
     db = conn.netflix_db
     db.netflix_movie.insert_many(movie_list, ordered=False)
     db.netflix_user.insert_many(user_list, ordered=False)
@@ -403,11 +409,9 @@ def pymongo_cummulative_ratings_sum_award_date(conn):
                     "output": {
                         "rating_sum": {
                             "$sum": "$rating",
-                            # "window": {
-                            #     "documents": [ <lower boundary>, <upper boundary> ],
-                            #     "range": [ <lower boundary>, <upper boundary> ],
-                            #     "unit": <time unit>
-                            # }
+                            "window": {
+                                "document": ["unbounded", "current"],
+                            },
                         },
                     },
                 }
@@ -446,23 +450,15 @@ def get_pymongo_test():
 
 @is_timed
 def neo4j_create_insert(conn: Driver, movies_data, ratings_data):
-    # conn.execute_query("CREATE INDEX FOR (m:MOVIE) ON (m.title)")
-    # conn.execute_query("CREATE CONSTRAINT FOR (m:MOVIE) REQUIRE m.uuid IS UNIQUE")
-    # conn.execute_query("CREATE CONSTRAINT FOR (u:USER) REQUIRE u.id IS UNIQUE")
-
-    # FOR MEMGRAPH
-    # conn.execute_query("CREATE INDEX ON :MOVIE")
-    # conn.execute_query("CREATE INDEX ON :MOVIE(title)")
-    # conn.execute_query("CREATE CONSTRAINT ON (m:MOVIE) ASSERT m.uuid IS UNIQUE")
-    # conn.execute_query("CREATE INDEX ON :USER")
-    # conn.execute_query("CREATE CONSTRAINT ON (u:USER) ASSERT u.id IS UNIQUE")
-    # conn.execute_query("CREATE INDEX ON :RATED")
+    conn.execute_query("CREATE INDEX FOR (m:MOVIE) ON (m.title)")
+    conn.execute_query("CREATE CONSTRAINT FOR (m:MOVIE) REQUIRE m.uuid IS UNIQUE")
+    conn.execute_query("CREATE CONSTRAINT FOR (u:USER) REQUIRE u.id IS UNIQUE")
 
     movie_batches = []
-    for index, movie_data in enumerate(movies_data[:20]):
+    for movie_data in movies_data:
         title = "'" + movie_data[2].replace("'", "\\'") + "'"
         movie_batches.append(
-            f"{'{'}uuid{index}:{movie_data[0]},release_year{index}:{movie_data[1]},title{index}:{title}{'}'}"
+            f"{'{'}uuid:{movie_data[0]},release_year:{movie_data[1]},title:{title}{'}'}"
         )
 
     users_set = set()
@@ -478,25 +474,25 @@ def neo4j_create_insert(conn: Driver, movies_data, ratings_data):
                 f"{'{'}id:{rating['user_id']},mid:{movie_id},rating:{rating['rating']},award_date:'{rating['date']}'{'}'}"
             )
 
-    movie_query = f"WITH [{','.join(movie_batches)}] AS batch UNWIND batch as row CREATE (n:MOVIE) SET n += row;"
+    movie_query = f"WITH [{','.join(movie_batches)}] AS batch UNWIND batch as row CREATE (n:MOVIE{'{'}uuid:row.uuid,release_year:row.release_year,title:row.title{'}'});"
 
     conn.execute_query(movie_query)
 
     total_queries = len(user_batches)
     num_batches = total_queries // batch_size
     for i in range(num_batches):
-        user_query = f"WITH [{','.join(user_batches[i*batch_size:(i+1)*batch_size])}] AS batch UNWIND batch as row CREATE (n:USER) SET n += row;"
+        user_query = f"WITH [{','.join(user_batches[i*batch_size:(i+1)*batch_size])}] AS batch UNWIND batch as row CREATE (:USER{'{'}id:row.id{'}'});"
         conn.execute_query(user_query)
 
     if (total_queries % batch_size) != 0:
-        user_query = f"WITH [{','.join(user_batches[num_batches*batch_size:])}] AS batch UNWIND batch as row CREATE (n:USER) SET n += row;"
+        user_query = f"WITH [{','.join(user_batches[num_batches*batch_size:])}] AS batch UNWIND batch as row CREATE (:USER{'{'}id:row.id{'}'});"
         conn.execute_query(user_query)
 
     rating_query_postfix = """
         UNWIND batch as row
         MATCH (m:MOVIE{uuid:row.mid})
         MATCH (u:USER{id:row.id})
-        CREATE (u)-[r:RATED {rating:row.rating,award_date:row.award_date}]->(m);
+        CREATE (u)-[:RATED {rating:row.rating,award_date:row.award_date}]->(m);
         """
 
     total_queries = len(rating_batches)
@@ -533,8 +529,6 @@ def neo4j_user_most_ratings(conn):
         """
     )
 
-    print(results)
-
     return results[0]
 
 
@@ -548,8 +542,6 @@ def neo4j_title_most_ratings(conn):
         ORDER BY counts DESC LIMIT 1;
         """
     )
-
-    print(results)
 
     return results[0]
 
@@ -565,8 +557,6 @@ def neo4j_cummulative_ratings_sum_award_date(conn):
         ORDER BY r.award_date ASC LIMIT 20;
         """
     )
-
-    print(results)
 
     return dumps(results)
 
@@ -621,8 +611,10 @@ def redis_create_insert(conn: Redis, movies_data, ratings_data):
             {
                 "name": f"movie:{movie_data[0]}",
                 "items": [
-                    f"release_year {movie_data[1]}",
-                    f"title {title}",
+                    "release_year",
+                    str(movie_data[1]),
+                    "title",
+                    str(title),
                 ],
             }
         )
@@ -635,10 +627,14 @@ def redis_create_insert(conn: Redis, movies_data, ratings_data):
                 {
                     "name": f"rating:{rating['user_id']}:{movie_id}",
                     "items": [
-                        f"user_id {rating['user_id']}",
-                        f"movie_id {movie_id}",
-                        f"rating {rating['rating']}",
-                        f"date {rating['date']}",
+                        "user_id",
+                        str(rating["user_id"]),
+                        "movie_id",
+                        str(movie_id),
+                        "rating",
+                        str(rating["rating"]),
+                        "date",
+                        str(rating["date"]),
                     ],
                 }
             )
@@ -661,14 +657,13 @@ def redis_create_insert(conn: Redis, movies_data, ratings_data):
 
     conn.sadd("user", ",".join([str(user) for user in user_set]))
 
-    conn.ft("rating:userid").create_index(
+    conn.ft("idx:rating").create_index(
         (
-            (NumericField("user_id")),
-            (NumericField("movie_id")),
-            (NumericField("rating")),
-            (TextField("date")),
+            (NumericField("user_id", sortable=True)),
+            (NumericField("movie_id", sortable=True)),
+            (TextField("date", sortable=True)),
         ),
-        definition=IndexDefinition([], index_type=IndexType.HASH),
+        definition=IndexDefinition(["rating:"], index_type=IndexType.HASH),
     )
 
     rating_pipeline = conn.pipeline(transaction=False)
@@ -690,51 +685,49 @@ def redis_create_insert(conn: Redis, movies_data, ratings_data):
 
 @is_timed
 def redis_num_of_ratings(conn: Redis):
-    count = conn.keys("rating:")
+    count = conn.keys("rating:*")
 
-    return count
+    return str(len(count))
 
 
 @is_timed
 def redis_user_most_ratings(conn: Redis):
-    res = conn.ft("rating:userid").aggregate(
+    res = conn.ft("idx:rating").aggregate(
         AggregateRequest("*")
-        .group_by("@user_id", count().alias("count"))
-        .sort_by("@count")
-        .limit(0, 1)
+        .load("*")
+        .group_by("@user_id", redis_red_count().alias("c"))
+        .sort_by(Desc("@c"), max=1)
+        .apply(identity="@user_id")
     )
 
-    print(res)
-    return res[0]["user_id"]
+    return res.rows[0]["user_id"]
 
 
 @is_timed
 def redis_title_most_ratings(conn: Redis):
-    res = conn.ft("rating:userid").aggregate(
+    res = conn.ft("idx:rating").aggregate(
         AggregateRequest("*")
-        .group_by("@movie_id", count().alias("count"))
-        .sort_by("@count")
-        .limit(0, 1)
+        .load("*")
+        .group_by("@movie_id", redis_red_count().alias("c"))
+        .sort_by(Desc("@c"), max=1)
     )
 
-    print(res)
-
-    title = conn.hget(f"movie:{res['movie_id']}", "title")
+    title = conn.hget(f"movie:{res.rows[0]['movie_id']}", "title")
     return title
 
 
 @is_timed
 def redis_cummulative_ratings_sum_award_date(conn: Redis):
-    res = conn.ft("rating:userid").aggregate(
+    res = conn.ft("idx:rating").aggregate(
         AggregateRequest("*")
-        .group_by("@date", redis_red_sum("rating"))
-        .sort_by("@date")
+        .load("rating")
+        .group_by("@date", redis_red_sum("@rating"))
+        .sort_by(Asc("@date"))
     )
 
-    print(res)
     running = 0
     windowed_results = []
-    for result in res[:20]:
+    for result in res.rows[:20]:
         running += result["rating"]
         windowed_results.append(running)
 
@@ -745,12 +738,10 @@ def redis_cummulative_ratings_sum_award_date(conn: Redis):
 def redis_drop_collection(conn: Redis):
     conn.delete("user")
 
-    for hashset in conn.hscan_iter("delscanmovie", match="movie:"):
-        print(hashset)
+    for hashset in conn.hscan_iter("delscanmovie", match="movie:*"):
         conn.delete(hashset["key"])
 
-    for hashset in conn.hscan_iter("delscan", match="rating:"):
-        print(hashset)
+    for hashset in conn.hscan_iter("delscan", match="rating:*"):
         conn.delete(hashset["key"])
 
 
@@ -790,31 +781,32 @@ def main():
     # define different databases here
     domains = [
         # get_psycopg_test(),
-        # get_pymongo_test(),
-        get_neo4j_test(),
+        get_pymongo_test(),
+        # get_neo4j_test(),
         # get_redis_test(),
     ]
     results = []
 
-    movies_data = open_movie_file()
-    ratings_data = open_1_file()
+    # movies_data = open_movie_file()
+    # ratings_data = open_1_file()
 
     for domain in domains:
         with domain.open_connection(environ):
             # Load the data
             result_monad = (
-                domain.set_up(movies_data, ratings_data)
-                # .num_of_ratings()
-                # .user_most_ratings()
-                # .title_most_ratings()
-                # .cummulative_ratings_sum_award_date()
+                domain
+                # .set_up(movies_data, ratings_data)
+                .num_of_ratings()
+                .user_most_ratings()
+                .title_most_ratings()
+                .cummulative_ratings_sum_award_date()
                 # .drop_table()
             )
 
         results.append(result_monad.get_result())
 
     with open("./output.json", "w+") as fd:
-        dump(results, fd)
+        dump(results, fd, cls=ResultEncoder)
 
 
 if __name__ == "__main__":

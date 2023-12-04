@@ -24,54 +24,27 @@ services:
     ports:
       - 27017:27017
 
-  # neo4j:
-  #   image: neo4j:5.13.0-community-bullseye
-  #   container_name: lmu-neo4j
-  #   environment:
-  #     NEO4J_AUTH: none
-  #     NEO4J_PLUGINS: '["apoc"]'
-  #   restart: always
-  #   deploy:
-  #     resources:
-  #       reservations:
-  #         cpus: '4'
-  #         memory: 1G
-  #       limits:
-  #         cpus: '6'
-  #         memory: 8G
-  #   # Username: neo4j
-  #   # Password: neo4j
-  #   volumes:
-  #     - lmu-neo4j:/data
-  #     - ./docker-neo4j:/conf
-  #   ports:
-  #     - 7474:7474
-  #     - 7687:7687
-
-  memgraph:
-    image: memgraph/memgraph-platform:2.12.1-memgraph2.12.1-lab2.9.1
-    container_name: lmu-memgraph
+  neo4j:
+    image: neo4j:5.13.0-community-bullseye
+    container_name: lmu-neo4j
+    environment:
+      NEO4J_AUTH: none
+      NEO4J_PLUGINS: '["apoc", "apoc-extended"]'
     restart: always
     deploy:
       resources:
         reservations:
-          cpus: '2'
-          memory: 1GB
+          memory: 1G
         limits:
-          memory: 4GB
-    ulimits:
-      stack: 8277716992
-    environment:
-      MEMGRAPH_USER: root
-      MEMGRAPH_PASSWORD: example
+          memory: 10G
+    # Username: neo4j
+    # Password: neo4j
     volumes:
-      - lmu-memgraph:/var/lib/memgraph/
-      - ./docker-memgraph/:/etc/memgraph/
-  # CONN_STR="bolt://127.0.0.1:7687"
+      - lmu-neo4j:/data
+      - ./docker-neo4j:/conf
     ports:
-      - 7687:7687 
-      - 7444:7444
-      - 3000:3000 
+      - 7474:7474
+      - 7687:7687
 
 
   redis:
@@ -100,6 +73,5 @@ networks:
 volumes:
   lmu-postgres:
   lmu-mongo:
-  # lmu-neo4j:
-  lmu-memgraph:
+  lmu-neo4j:
   lmu-redis:
