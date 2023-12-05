@@ -518,56 +518,66 @@ def neo4j_create_insert(conn: Driver, movies_data, ratings_data):
 
 @is_timed
 def neo4j_num_of_ratings(conn):
-    return conn.execute_query(
+    result = conn.execute_query(
         """
         MATCH (:USER)-[r:RATED]->(:MOVIE)
-        WITH count(*) AS counts
+        WITH count(r) AS counts
         RETURN counts;
         """
     )
 
+    return result.records[0]["counts"]
+
 
 @is_timed
 def neo4j_user_most_ratings(conn):
-    results = conn.execute_query(
+    result = conn.execute_query(
         """
-        MATCH (:USER)-[r:RATED]->(:MOVIE)
-        WITH count(*) AS counts
-        RETURN u.id
+        MATCH (u:USER)-[r:RATED]->(:MOVIE)
+        WITH u.id AS res, count(r) AS counts
+        RETURN res
         ORDER BY counts DESC LIMIT 1;
         """
     )
 
-    return results[0]
+    return result.records[0]["res"]
 
 
 @is_timed
 def neo4j_title_most_ratings(conn):
-    results = conn.execute_query(
+    result = conn.execute_query(
         """
         MATCH (:USER)-[r:RATED]->(m:MOVIE)
-        WITH count(*) AS counts
-        RETURN m.title
+        WITH m.title AS res, count(r) AS counts
+        RETURN res
         ORDER BY counts DESC LIMIT 1;
         """
     )
 
-    return results[0]
+    return result.records[0]["res"]
 
 
 @is_timed
 def neo4j_cummulative_ratings_sum_award_date(conn):
-    results = conn.execute_query(
+    result = conn.execute_query(
         """
-        MATCH (:USER)-[r:RATED]->(m:MOVIE)
-        WITH sum(r.rating), r.award_date AS ratingsAwards
-        UNWIND ratingsRunning AS ratingsUnwound
-        RETURN ratingsRunning
-        ORDER BY r.award_date ASC LIMIT 20;
+        MATCH (:USER)-[r:RATED]->(:MOVIE)
+        WITH r.award_date AS awardDate, sum(r.rating) AS ratingNum
+        ORDER BY awardDate ASC LIMIT 20
+        WITH awardDate as awardDate, COLLECT {
+            MATCH (:USER)-[r:RATED]->(:MOVIE)
+            WHERE r.award_date <= awardDate
+            WITH sum(r.rating) AS ratingSum
+            RETURN ratingSum
+        } AS ratingSumWound
+        UNWIND ratingSumWound as ratingSum
+        RETURN awardDate, ratingSum
+        ;
         """
     )
 
-    return dumps(results)
+    mapped_results = list(map(lambda record: record["ratingSum"], result.records))
+    return dumps(mapped_results)
 
 
 @is_timed
@@ -788,21 +798,22 @@ def main():
     # define different databases here
     domains = [
         # get_psycopg_test(),
-        get_pymongo_test(),
-        # get_neo4j_test(),
+        # get_pymongo_test(),
+        get_neo4j_test(),
         # get_redis_test(),
     ]
     results = []
 
-    movies_data = open_movie_file()
-    ratings_data = open_1_file()
-    ratings_data = dict(list(ratings_data.items())[:limit_size])
+    # movies_data = open_movie_file()
+    # ratings_data = open_1_file()
+    # ratings_data = dict(list(ratings_data.items())[:limit_size])
 
     for domain in domains:
         with domain.open_connection(environ):
             # Load the data
             result_monad = (
-                domain.set_up(movies_data, ratings_data)
+                domain
+                # .set_up(movies_data, ratings_data)
                 .num_of_ratings()
                 .user_most_ratings()
                 .title_most_ratings()
