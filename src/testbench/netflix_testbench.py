@@ -17,7 +17,6 @@ from redis.commands.search.reducers import count as redis_red_count
 from redis.commands.search.reducers import sum as redis_red_sum
 from redis.commands.search.aggregation import Asc, Desc
 from json import dump, dumps, JSONEncoder
-from concurrent.futures import ThreadPoolExecutor
 
 from time import time
 from dataclasses import dataclass
