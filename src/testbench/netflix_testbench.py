@@ -18,6 +18,7 @@ from redis.commands.search.reducers import sum as redis_red_sum
 from redis.commands.search.aggregation import Asc, Desc
 from json import dump, dumps, JSONEncoder
 
+from datetime import datetime
 from time import time
 from dataclasses import dataclass
 
@@ -25,6 +26,7 @@ from data.ingress import open_1_file, open_movie_file
 from util import read_dotenv_file
 
 batch_size = 10_000
+limit_size = 30
 
 
 @dataclass
@@ -309,7 +311,7 @@ def pymongo_create_insert(conn, movies_data, ratings_data):
         title = movie_data[2].replace("'", "\\'")
         movie_list.append(
             {
-                "id": movie_data[0],
+                "id": int(movie_data[0]),
                 "release_year": movie_data[1],
                 "title": title,
             }
@@ -318,13 +320,12 @@ def pymongo_create_insert(conn, movies_data, ratings_data):
     for movie_id, ratings in ratings_data.items():
         for rating in ratings:
             user_set.add(rating["user_id"])
-
             rating_list.append(
                 {
                     "user_id": rating["user_id"],
                     "movie_id": movie_id,
                     "rating": rating["rating"],
-                    "award_date": rating["date"],
+                    "award_date": datetime.strptime(rating["date"], "%Y-%m-%d"),
                 }
             )
 
@@ -350,8 +351,7 @@ def pymongo_user_most_ratings(conn: MongoClient):
         [
             {
                 "$group": {
-                    "_id": "$_id",
-                    "user_id": {"$first": "$user_id"},
+                    "_id": "$user_id",
                     "num_ratings": {"$sum": 1},
                 }
             },
@@ -372,26 +372,30 @@ def pymongo_title_most_ratings(conn):
         [
             {
                 "$group": {
-                    "_id": "$_id",
-                    "movie_id": {"$first": "$movie_id"},
+                    "_id": "$movie_id",
                     "num_ratings": {"$sum": 1},
                 }
             },
             {"$sort": {"num_ratings": -1}},
-            {"$limit": 1},
             {
                 "$lookup": {
                     "from": "netflix_movie",
-                    "localField": "id",
-                    "foreignField": "movie_id",
-                    "as": "title",
+                    "localField": "_id",
+                    "foreignField": "id",
+                    "as": "movie",
                 }
             },
+            {"$limit": 1},
         ]
     )
 
     movie_result = list(agg_result)[0]
-    return f"{movie_result['title']}:{movie_result['num_ratings']}"
+    movie_title = "NA"
+
+    if "movie" in movie_result and len(movie_result["movie"]) > 0:
+        movie_title = movie_result["movie"][0]["title"]
+
+    return f"{movie_title}:{movie_result['num_ratings']}"
 
 
 @is_timed
@@ -401,9 +405,15 @@ def pymongo_cummulative_ratings_sum_award_date(conn):
     agg_result = db.netflix_rating.aggregate(
         [
             {
+                "$group": {
+                    "_id": "$award_date",
+                    "rating": {"$sum": "$rating"},
+                }
+            },
+            {
                 "$setWindowFields": {
                     "sortBy": {
-                        "award_date": 1,
+                        "_id": 1,
                     },
                     "output": {
                         "rating_sum": {
@@ -646,7 +656,6 @@ def redis_create_insert(conn: Redis, movies_data, ratings_data):
         conditional_batchify += 1
 
         if conditional_batchify == on_count:
-            print(f"MOVIE BATCHIFIED!")
             movie_pipeline.execute()
             conditional_batchify = 0
 
@@ -672,7 +681,6 @@ def redis_create_insert(conn: Redis, movies_data, ratings_data):
         conditional_batchify += 1
 
         if conditional_batchify == on_count:
-            print(f"RATING BATCHIFIED! {i}")
             i += 1
             rating_pipeline.execute()
             conditional_batchify = 0
@@ -779,15 +787,16 @@ def main():
 
     # define different databases here
     domains = [
-        get_psycopg_test(),
+        # get_psycopg_test(),
         get_pymongo_test(),
-        get_neo4j_test(),
-        get_redis_test(),
+        # get_neo4j_test(),
+        # get_redis_test(),
     ]
     results = []
 
     movies_data = open_movie_file()
     ratings_data = open_1_file()
+    ratings_data = dict(list(ratings_data.items())[:limit_size])
 
     for domain in domains:
         with domain.open_connection(environ):
@@ -798,7 +807,7 @@ def main():
                 .user_most_ratings()
                 .title_most_ratings()
                 .cummulative_ratings_sum_award_date()
-                .drop_table()
+                # .drop_table()
             )
 
         results.append(result_monad.get_result())
