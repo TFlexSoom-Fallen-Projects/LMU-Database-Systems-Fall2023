@@ -26,7 +26,7 @@ from data.ingress import open_1_file, open_movie_file
 from util import read_dotenv_file
 
 batch_size = 10_000
-limit_size = 30
+limit_movie_size = 1  # 1-24056
 
 
 @dataclass
@@ -807,21 +807,22 @@ def main():
     ]
     results = []
 
-    # movies_data = open_movie_file()
-    # ratings_data = open_1_file()
-    # ratings_data = dict(list(ratings_data.items())[:limit_size])
+    movies_data = open_movie_file()
+    ratings_data = open_1_file()
+
+    if limit_movie_size != None:
+        ratings_data = dict(list(ratings_data.items())[:limit_movie_size])
 
     for domain in domains:
         with domain.open_connection(environ):
             # Load the data
             result_monad = (
-                domain
-                # .set_up(movies_data, ratings_data)
+                domain.set_up(movies_data, ratings_data)
                 .num_of_ratings()
                 .user_most_ratings()
                 .title_most_ratings()
                 .cummulative_ratings_sum_award_date()
-                # .drop_table()
+                .drop_table()
             )
 
         results.append(result_monad.get_result())
