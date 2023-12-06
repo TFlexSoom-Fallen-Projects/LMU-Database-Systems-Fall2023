@@ -361,7 +361,7 @@ def pymongo_user_most_ratings(conn: MongoClient):
     )
 
     user_result = list(agg_result)[0]
-    return f"{user_result['user_id']}:{user_result['num_ratings']}"
+    return f"{user_result['_id']}:{user_result['num_ratings']}"
 
 
 @is_timed
@@ -711,26 +711,29 @@ def redis_num_of_ratings(conn: Redis):
 def redis_user_most_ratings(conn: Redis):
     res = conn.ft("idx:rating").aggregate(
         AggregateRequest("*")
-        .load("*")
+        .load("@user_id")
         .group_by("@user_id", redis_red_count().alias("c"))
         .sort_by(Desc("@c"), max=1)
-        .apply(identity="@user_id")
     )
 
-    return res.rows[0]["user_id"]
+    user_id_label, user_id, count_label, count = res.rows[0]
+
+    return f"{str(user_id)}:{str(count)}"
 
 
 @is_timed
 def redis_title_most_ratings(conn: Redis):
     res = conn.ft("idx:rating").aggregate(
         AggregateRequest("*")
-        .load("*")
+        .load("@movie_id")
         .group_by("@movie_id", redis_red_count().alias("c"))
         .sort_by(Desc("@c"), max=1)
     )
 
-    title = conn.hget(f"movie:{res.rows[0]['movie_id']}", "title")
-    return title
+    movie_id_label, movie_id, count_label, count = res.rows[0]
+
+    title = conn.hget(f"movie:{movie_id}", "title")
+    return f"{title}:{str(count)}"
 
 
 @is_timed
@@ -739,13 +742,13 @@ def redis_cummulative_ratings_sum_award_date(conn: Redis):
         AggregateRequest("*")
         .load("rating")
         .group_by("@date", redis_red_sum("@rating"))
-        .sort_by(Asc("@date"))
+        .sort_by(Asc("@date"), max=20)
     )
 
     running = 0
     windowed_results = []
-    for result in res.rows[:20]:
-        running += result["rating"]
+    for date_label, date, rating_num_label, rating_num in res.rows:
+        running += int(rating_num)
         windowed_results.append(running)
 
     return dumps(windowed_results)
@@ -797,10 +800,10 @@ def main():
 
     # define different databases here
     domains = [
-        # get_psycopg_test(),
-        # get_pymongo_test(),
+        get_psycopg_test(),
+        get_pymongo_test(),
         get_neo4j_test(),
-        # get_redis_test(),
+        get_redis_test(),
     ]
     results = []
 
