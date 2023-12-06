@@ -26,7 +26,7 @@ from data.ingress import open_1_file, open_movie_file
 from util import read_dotenv_file
 
 batch_size = 10_000
-limit_movie_size = 1  # 1-24056
+limit_movie_size = None  # 1-24056
 
 
 @dataclass
