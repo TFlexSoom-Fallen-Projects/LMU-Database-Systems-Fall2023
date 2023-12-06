@@ -18,6 +18,7 @@ from redis.commands.search.reducers import sum as redis_red_sum
 from redis.commands.search.aggregation import Asc, Desc
 from json import dump, dumps, JSONEncoder
 
+from datetime import datetime
 from time import time
 from dataclasses import dataclass
 
@@ -25,6 +26,7 @@ from data.ingress import open_1_file, open_movie_file
 from util import read_dotenv_file
 
 batch_size = 10_000
+limit_movie_size = None  # 1-24056
 
 
 @dataclass
@@ -309,7 +311,7 @@ def pymongo_create_insert(conn, movies_data, ratings_data):
         title = movie_data[2].replace("'", "\\'")
         movie_list.append(
             {
-                "id": movie_data[0],
+                "id": int(movie_data[0]),
                 "release_year": movie_data[1],
                 "title": title,
             }
@@ -318,13 +320,12 @@ def pymongo_create_insert(conn, movies_data, ratings_data):
     for movie_id, ratings in ratings_data.items():
         for rating in ratings:
             user_set.add(rating["user_id"])
-
             rating_list.append(
                 {
                     "user_id": rating["user_id"],
                     "movie_id": movie_id,
                     "rating": rating["rating"],
-                    "award_date": rating["date"],
+                    "award_date": datetime.strptime(rating["date"], "%Y-%m-%d"),
                 }
             )
 
@@ -350,8 +351,7 @@ def pymongo_user_most_ratings(conn: MongoClient):
         [
             {
                 "$group": {
-                    "_id": "$_id",
-                    "user_id": {"$first": "$user_id"},
+                    "_id": "$user_id",
                     "num_ratings": {"$sum": 1},
                 }
             },
@@ -361,7 +361,7 @@ def pymongo_user_most_ratings(conn: MongoClient):
     )
 
     user_result = list(agg_result)[0]
-    return f"{user_result['user_id']}:{user_result['num_ratings']}"
+    return f"{user_result['_id']}:{user_result['num_ratings']}"
 
 
 @is_timed
@@ -372,26 +372,30 @@ def pymongo_title_most_ratings(conn):
         [
             {
                 "$group": {
-                    "_id": "$_id",
-                    "movie_id": {"$first": "$movie_id"},
+                    "_id": "$movie_id",
                     "num_ratings": {"$sum": 1},
                 }
             },
             {"$sort": {"num_ratings": -1}},
-            {"$limit": 1},
             {
                 "$lookup": {
                     "from": "netflix_movie",
-                    "localField": "id",
-                    "foreignField": "movie_id",
-                    "as": "title",
+                    "localField": "_id",
+                    "foreignField": "id",
+                    "as": "movie",
                 }
             },
+            {"$limit": 1},
         ]
     )
 
     movie_result = list(agg_result)[0]
-    return f"{movie_result['title']}:{movie_result['num_ratings']}"
+    movie_title = "NA"
+
+    if "movie" in movie_result and len(movie_result["movie"]) > 0:
+        movie_title = movie_result["movie"][0]["title"]
+
+    return f"{movie_title}:{movie_result['num_ratings']}"
 
 
 @is_timed
@@ -401,9 +405,15 @@ def pymongo_cummulative_ratings_sum_award_date(conn):
     agg_result = db.netflix_rating.aggregate(
         [
             {
+                "$group": {
+                    "_id": "$award_date",
+                    "rating": {"$sum": "$rating"},
+                }
+            },
+            {
                 "$setWindowFields": {
                     "sortBy": {
-                        "award_date": 1,
+                        "_id": 1,
                     },
                     "output": {
                         "rating_sum": {
@@ -508,56 +518,66 @@ def neo4j_create_insert(conn: Driver, movies_data, ratings_data):
 
 @is_timed
 def neo4j_num_of_ratings(conn):
-    return conn.execute_query(
+    result = conn.execute_query(
         """
         MATCH (:USER)-[r:RATED]->(:MOVIE)
-        WITH count(*) AS counts
+        WITH count(r) AS counts
         RETURN counts;
         """
     )
 
+    return result.records[0]["counts"]
+
 
 @is_timed
 def neo4j_user_most_ratings(conn):
-    results = conn.execute_query(
+    result = conn.execute_query(
         """
-        MATCH (:USER)-[r:RATED]->(:MOVIE)
-        WITH count(*) AS counts
-        RETURN u.id
+        MATCH (u:USER)-[r:RATED]->(:MOVIE)
+        WITH u.id AS res, count(r) AS counts
+        RETURN res
         ORDER BY counts DESC LIMIT 1;
         """
     )
 
-    return results[0]
+    return result.records[0]["res"]
 
 
 @is_timed
 def neo4j_title_most_ratings(conn):
-    results = conn.execute_query(
+    result = conn.execute_query(
         """
         MATCH (:USER)-[r:RATED]->(m:MOVIE)
-        WITH count(*) AS counts
-        RETURN m.title
+        WITH m.title AS res, count(r) AS counts
+        RETURN res
         ORDER BY counts DESC LIMIT 1;
         """
     )
 
-    return results[0]
+    return result.records[0]["res"]
 
 
 @is_timed
 def neo4j_cummulative_ratings_sum_award_date(conn):
-    results = conn.execute_query(
+    result = conn.execute_query(
         """
-        MATCH (:USER)-[r:RATED]->(m:MOVIE)
-        WITH sum(r.rating), r.award_date AS ratingsAwards
-        UNWIND ratingsRunning AS ratingsUnwound
-        RETURN ratingsRunning
-        ORDER BY r.award_date ASC LIMIT 20;
+        MATCH (:USER)-[r:RATED]->(:MOVIE)
+        WITH r.award_date AS awardDate, sum(r.rating) AS ratingNum
+        ORDER BY awardDate ASC LIMIT 20
+        WITH awardDate as awardDate, COLLECT {
+            MATCH (:USER)-[r:RATED]->(:MOVIE)
+            WHERE r.award_date <= awardDate
+            WITH sum(r.rating) AS ratingSum
+            RETURN ratingSum
+        } AS ratingSumWound
+        UNWIND ratingSumWound as ratingSum
+        RETURN awardDate, ratingSum
+        ;
         """
     )
 
-    return dumps(results)
+    mapped_results = list(map(lambda record: record["ratingSum"], result.records))
+    return dumps(mapped_results)
 
 
 @is_timed
@@ -646,7 +666,6 @@ def redis_create_insert(conn: Redis, movies_data, ratings_data):
         conditional_batchify += 1
 
         if conditional_batchify == on_count:
-            print(f"MOVIE BATCHIFIED!")
             movie_pipeline.execute()
             conditional_batchify = 0
 
@@ -672,7 +691,6 @@ def redis_create_insert(conn: Redis, movies_data, ratings_data):
         conditional_batchify += 1
 
         if conditional_batchify == on_count:
-            print(f"RATING BATCHIFIED! {i}")
             i += 1
             rating_pipeline.execute()
             conditional_batchify = 0
@@ -693,26 +711,29 @@ def redis_num_of_ratings(conn: Redis):
 def redis_user_most_ratings(conn: Redis):
     res = conn.ft("idx:rating").aggregate(
         AggregateRequest("*")
-        .load("*")
+        .load("@user_id")
         .group_by("@user_id", redis_red_count().alias("c"))
         .sort_by(Desc("@c"), max=1)
-        .apply(identity="@user_id")
     )
 
-    return res.rows[0]["user_id"]
+    user_id_label, user_id, count_label, count = res.rows[0]
+
+    return f"{str(user_id)}:{str(count)}"
 
 
 @is_timed
 def redis_title_most_ratings(conn: Redis):
     res = conn.ft("idx:rating").aggregate(
         AggregateRequest("*")
-        .load("*")
+        .load("@movie_id")
         .group_by("@movie_id", redis_red_count().alias("c"))
         .sort_by(Desc("@c"), max=1)
     )
 
-    title = conn.hget(f"movie:{res.rows[0]['movie_id']}", "title")
-    return title
+    movie_id_label, movie_id, count_label, count = res.rows[0]
+
+    title = conn.hget(f"movie:{movie_id}", "title")
+    return f"{title}:{str(count)}"
 
 
 @is_timed
@@ -721,13 +742,13 @@ def redis_cummulative_ratings_sum_award_date(conn: Redis):
         AggregateRequest("*")
         .load("rating")
         .group_by("@date", redis_red_sum("@rating"))
-        .sort_by(Asc("@date"))
+        .sort_by(Asc("@date"), max=20)
     )
 
     running = 0
     windowed_results = []
-    for result in res.rows[:20]:
-        running += result["rating"]
+    for date_label, date, rating_num_label, rating_num in res.rows:
+        running += int(rating_num)
         windowed_results.append(running)
 
     return dumps(windowed_results)
@@ -788,6 +809,9 @@ def main():
 
     movies_data = open_movie_file()
     ratings_data = open_1_file()
+
+    if limit_movie_size != None:
+        ratings_data = dict(list(ratings_data.items())[:limit_movie_size])
 
     for domain in domains:
         with domain.open_connection(environ):

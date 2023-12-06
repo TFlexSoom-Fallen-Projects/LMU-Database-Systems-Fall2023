@@ -33,8 +33,6 @@ services:
     restart: always
     deploy:
       resources:
-        reservations:
-          memory: 1G
         limits:
           memory: 10G
     # Username: neo4j
@@ -53,10 +51,8 @@ services:
     restart: always
     deploy:
       resources:
-        reservations:
-          memory: 1GB
         limits:
-          memory: 6GB
+          memory: 10G
     # No Username
     # No Password
     volumes:
